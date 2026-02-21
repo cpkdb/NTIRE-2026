@@ -1,0 +1,19 @@
+services:
+  ntire:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ntire2026:latest
+    container_name: ntire2026
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ../src:/workspace/src
+      - ../experiments:/workspace/experiments
+      - ../submissions:/workspace/submissions
+      - /root/autodl-tmp:/data
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    shm_size: '8gb'

@@ -1,0 +1,28 @@
+TRAINING COMPLETED at Sun Feb  8 20:24:39 CST 2026
+Train Loss: 1.4880, Val AUC: 0.9908, Robust Val AUC: 0.9534
+New best Robust AUC: 0.9534
+Train Loss: 1.2789, Val AUC: 0.9939, Robust Val AUC: 0.9582
+New best Robust AUC: 0.9582
+Train Loss: 1.2435, Val AUC: 0.9960, Robust Val AUC: 0.9586
+New best Robust AUC: 0.9586
+Train Loss: 1.2207, Val AUC: 0.9966, Robust Val AUC: 0.9631
+New best Robust AUC: 0.9631
+Train Loss: 1.2068, Val AUC: 0.9971, Robust Val AUC: 0.9658
+New best Robust AUC: 0.9658
+Train Loss: 1.1901, Val AUC: 0.9975, Robust Val AUC: 0.9681
+New best Robust AUC: 0.9681
+Train Loss: 1.1795, Val AUC: 0.9978, Robust Val AUC: 0.9686
+New best Robust AUC: 0.9686
+Train Loss: 1.1693, Val AUC: 0.9981, Robust Val AUC: 0.9705
+New best Robust AUC: 0.9705
+Train Loss: 1.1553, Val AUC: 0.9982, Robust Val AUC: 0.9727
+New best Robust AUC: 0.9727
+Train Loss: 1.1466, Val AUC: 0.9983, Robust Val AUC: 0.9716
+Train Loss: 1.1445, Val AUC: 0.9984, Robust Val AUC: 0.9737
+New best Robust AUC: 0.9737
+Train Loss: 1.1390, Val AUC: 0.9985, Robust Val AUC: 0.9746
+New best Robust AUC: 0.9746
+Train Loss: 1.1286, Val AUC: 0.9985, Robust Val AUC: 0.9741
+Train Loss: 1.1336, Val AUC: 0.9985, Robust Val AUC: 0.9761
+New best Robust AUC: 0.9761
+Train Loss: 1.1305, Val AUC: 0.9985, Robust Val AUC: 0.9754
