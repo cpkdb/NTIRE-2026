@@ -8,17 +8,19 @@ from tqdm import tqdm
 from PIL import Image
 
 from datasets import AIGIDataset, ToyDataset
-from models import TimmClassifier, RINEClassifier, DINOv2Classifier, DINOv3Classifier, FreqClassifier
+from models import TimmClassifier, RINEClassifier, DINOv2Classifier, DINOv3Classifier, DINOv3FreqMoE, FreqClassifier
 from transforms import get_val_transform, get_tta_transforms, _get_norm
 
 
-def load_model(model_type, model_name, backbone, checkpoint, device, num_hooks=None, lora_layers=0):
+def load_model(model_type, model_name, backbone, checkpoint, device, num_hooks=None, lora_layers=0, num_experts=3):
     if model_type == "rine":
         model = RINEClassifier(backbone=backbone, device=device, num_hooks=num_hooks).to(device)
     elif model_type == "dinov2":
         model = DINOv2Classifier(num_hooks=num_hooks, lora_layers=lora_layers).to(device)
     elif model_type == "dinov3":
         model = DINOv3Classifier(num_hooks=num_hooks, lora_layers=lora_layers).to(device)
+    elif model_type == "dinov3_moe":
+        model = DINOv3FreqMoE(num_experts=num_experts, num_hooks=num_hooks, lora_layers=lora_layers).to(device)
     elif model_type == "freq":
         model = FreqClassifier(backbone_type="imagenet").to(device)
     else:
@@ -131,7 +133,7 @@ def main():
     parser.add_argument("--val_dir", type=str, default=None, help="Validation image directory (flat layout)")
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--model", type=str, default="resnet50")
-    parser.add_argument("--model_type", type=str, default="rine", choices=["timm", "rine", "dinov2", "dinov3", "freq"])
+    parser.add_argument("--model_type", type=str, default="rine", choices=["timm", "rine", "dinov2", "dinov3", "dinov3_moe", "freq"])
     parser.add_argument("--backbone", type=str, default="ViT-L/14")
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--output", type=str, default="/workspace/submissions/submission.csv")
@@ -142,6 +144,7 @@ def main():
     parser.add_argument("--num_hooks", type=int, default=None)
     parser.add_argument("--lora_layers", type=int, default=0)
     parser.add_argument("--patch", action="store_true", help="Multi-crop patch inference")
+    parser.add_argument("--num_experts", type=int, default=3)
     parser.add_argument("--n_random_crops", type=int, default=3)
     args = parser.parse_args()
 
@@ -158,19 +161,19 @@ def main():
 
     if args.ensemble and args.model_paths:
         paths = [p.strip() for p in args.model_paths.split(",")]
-        models = [load_model(args.model_type, args.model, args.backbone, p, device, args.num_hooks, args.lora_layers) for p in paths]
+        models = [load_model(args.model_type, args.model, args.backbone, p, device, args.num_hooks, args.lora_layers, getattr(args, 'num_experts', 3)) for p in paths]
         loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
         results = inference_ensemble(models, loader, device)
     elif args.patch:
-        model = load_model(args.model_type, args.model, args.backbone, args.checkpoint, device, args.num_hooks, args.lora_layers)
+        model = load_model(args.model_type, args.model, args.backbone, args.checkpoint, device, args.num_hooks, args.lora_layers, getattr(args, 'num_experts', 3))
         results = inference_patch(model, dataset, device, n_random=args.n_random_crops,
                                   backbone_type=backbone_type)
     elif args.tta:
-        model = load_model(args.model_type, args.model, args.backbone, args.checkpoint, device, args.num_hooks, args.lora_layers)
+        model = load_model(args.model_type, args.model, args.backbone, args.checkpoint, device, args.num_hooks, args.lora_layers, getattr(args, 'num_experts', 3))
         tta_tfms = get_tta_transforms(backbone_type=backbone_type)
         results = inference_tta(model, dataset, tta_tfms, args.batch_size, device)
     else:
-        model = load_model(args.model_type, args.model, args.backbone, args.checkpoint, device, args.num_hooks, args.lora_layers)
+        model = load_model(args.model_type, args.model, args.backbone, args.checkpoint, device, args.num_hooks, args.lora_layers, getattr(args, 'num_experts', 3))
         loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
         results = inference(model, loader, device)
 

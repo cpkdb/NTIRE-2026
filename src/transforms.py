@@ -213,33 +213,33 @@ class RobustTransform:
         self.strong = T.Compose([
             T.Resize((image_size, image_size)),
             T.RandomHorizontalFlip(),
-            T.RandomApply([T.ColorJitter(0.3, 0.3, 0.3, 0.1)], p=0.4),
+            T.RandomApply([T.ColorJitter(0.4, 0.4, 0.3, 0.15)], p=0.5),
             T.RandomApply([T.GaussianBlur(kernel_size=5, sigma=(0.1, 3.0))], p=0.3),
             RandomDownsampleUpsample(scale_range=(0.25, 1.0)),
             RandomSharpen(p=0.3),
             MedianFilter(kernel_size=3, p=0.2),
             GammaAdjust(gamma_range=(0.7, 1.3), p=0.3),
             T.RandomChoice([
-                JPEGCompression(quality_range=(10, 100)),
-                WebPCompression(quality_range=(10, 100)),
+                JPEGCompression(quality_range=(30, 100)),
+                WebPCompression(quality_range=(30, 100)),
                 DoubleJPEG(),
             ]),
             T.RandomApply([LensBlur(radius_range=(1, 4))], p=0.15),
             T.RandomApply([ColorShift(amount_range=(1, 6))], p=0.15),
             T.RandomApply([ImpulseNoise(density_range=(0.001, 0.015))], p=0.1),
-            T.RandomApply([SpatialJitter(amount_range=(0.1, 0.4))], p=0.1),
+            T.RandomApply([SpatialJitter(amount_range=(0.1, 0.4))], p=0.05),
             T.RandomApply([ColorQuantization(levels_range=(8, 18))], p=0.1),
             T.RandomApply([ScreenshotSim()], p=0.15),
             T.RandomPerspective(distortion_scale=0.2, p=0.15),
-            T.RandomApply([CompoundCorruption()], p=0.2),
+            T.RandomApply([CompoundCorruption()], p=0.10),
             T.ToTensor(),
-            GaussianNoise(std_range=(0.0, 0.08)),
+            GaussianNoise(std_range=(0.0, 0.04)),
             T.Normalize(mean=mean, std=std),
             T.RandomErasing(p=0.1, scale=(0.02, 0.1)),
         ])
 
     def __call__(self, img):
-        return self.light(img) if random.random() < 0.3 else self.strong(img)
+        return self.light(img) if random.random() < 0.4 else self.strong(img)
 
 
 # Corruption function for consistency training (applied to tensors after base transform)
