@@ -16,7 +16,6 @@ class DINOv3FreqMoE(DINOv3Classifier):
                          model_path=model_path, lora_layers=lora_layers,
                          lora_rank=lora_rank)
 
-        # --- Frequency encoder (from FreqClassifier) ---
         mean, std = _NORM_IMAGENET
         self.register_buffer("_freq_mean", torch.tensor(mean).view(1, 3, 1, 1))
         self.register_buffer("_freq_std", torch.tensor(std).view(1, 3, 1, 1))
@@ -30,29 +29,28 @@ class DINOv3FreqMoE(DINOv3Classifier):
         )
         self.freq_pool = nn.AdaptiveAvgPool2d(1)
 
-        # --- Dynamic alpha generator ---
-        n_hooks = len(self.hooks)
-        self.alpha_gen = nn.Linear(128, n_hooks * proj_dim)
+        self.cls_router_proj = nn.Sequential(
+            nn.LayerNorm(1024),
+            nn.Linear(1024, 128),
+            nn.GELU(),
+            nn.Dropout(0.1),
+        )
 
-        # --- Router ---
         self.router = nn.Sequential(
-            nn.Linear(128, 64), nn.ReLU(inplace=True),
+            nn.Linear(256, 64), nn.ReLU(inplace=True),
             nn.Linear(64, num_experts),
         )
         nn.init.zeros_(self.router[-1].weight)
         nn.init.zeros_(self.router[-1].bias)
         self.tau = nn.Parameter(torch.ones(1))
+        self._use_gumbel = False
+        self._gumbel_tau = 1.0
 
-        # --- Experts (independently initialized, cold-start) ---
         self.experts = nn.ModuleList([self._make_expert(proj_dim) for _ in range(num_experts)])
 
-        # Remove single head/static alpha (replaced by experts + alpha_gen)
         del self.head
-        del self.alpha
 
         self._num_experts = num_experts
-        self._proj_dim = proj_dim
-        self._n_hooks = n_hooks
 
     @staticmethod
     def _make_haar():
@@ -74,33 +72,41 @@ class DINOv3FreqMoE(DINOv3Classifier):
         raw = x * self._freq_std + self._freq_mean
         c = F.conv2d(raw, self._haar.to(raw.dtype), stride=2, groups=3)
         hf = torch.cat([c[:, 1:4], c[:, 5:8], c[:, 9:12]], dim=1)
-        return self.freq_pool(self.freq_enc(hf)).flatten(1)  # [B,128]
+        return self.freq_pool(self.freq_enc(hf)).flatten(1)
+
+    def _build_router_input(self, f_tok, h_raw):
+        cls_tok = self.cls_router_proj(h_raw[:, -1, :].detach())
+        return torch.cat([f_tok, cls_tok], dim=-1)
+
+    def _compute_gates(self, router_logits):
+        if self.training:
+            if self._use_gumbel:
+                return F.gumbel_softmax(router_logits, tau=self._gumbel_tau, hard=True, dim=-1)
+            tau = self.tau.clamp(0.1, 10.0)
+            return torch.softmax(router_logits / tau, dim=-1)
+        return F.one_hot(router_logits.argmax(dim=-1), num_classes=self._num_experts).to(router_logits.dtype)
 
     def forward(self, x):
         f_tok = self._freq_token(x)
-        g = self.proj1(self._extract(x).float())
+        h_raw = self._extract(x).float()
+        g = self.proj1(h_raw)
 
-        B = g.shape[0]
-        alpha_dyn = self.alpha_gen(f_tok).view(B, self._n_hooks, self._proj_dim)
-        z = (torch.softmax(alpha_dyn, dim=1) * g).sum(dim=1)
+        z = (torch.softmax(self.alpha, dim=1) * g).sum(dim=1)
         z = self.proj2(z)
 
-        tau = self.tau.clamp(0.1, 10.0)
-        gates = torch.softmax(self.router(f_tok) / tau, dim=-1)  # [B, E]
-        expert_logits = torch.stack([e(z).squeeze(-1) for e in self.experts], dim=-1)  # [B, E]
-        return (gates * expert_logits).sum(dim=-1)  # [B]
+        gates = self._compute_gates(self.router(self._build_router_input(f_tok, h_raw)))
+        expert_logits = torch.stack([e(z).squeeze(-1) for e in self.experts], dim=-1)
+        return (gates * expert_logits).sum(dim=-1)
 
     def forward_with_aux(self, x):
         f_tok = self._freq_token(x)
-        g = self.proj1(self._extract(x).float())
+        h_raw = self._extract(x).float()
+        g = self.proj1(h_raw)
 
-        B = g.shape[0]
-        alpha_dyn = self.alpha_gen(f_tok).view(B, self._n_hooks, self._proj_dim)
-        z = (torch.softmax(alpha_dyn, dim=1) * g).sum(dim=1)
+        z = (torch.softmax(self.alpha, dim=1) * g).sum(dim=1)
         z = self.proj2(z)
 
-        tau = self.tau.clamp(0.1, 10.0)
-        gates = torch.softmax(self.router(f_tok) / tau, dim=-1)
+        gates = self._compute_gates(self.router(self._build_router_input(f_tok, h_raw)))
         expert_logits = torch.stack([e(z).squeeze(-1) for e in self.experts], dim=-1)
         logit = (gates * expert_logits).sum(dim=-1)
         return logit, z, gates, expert_logits
@@ -121,9 +127,9 @@ class DINOv3FreqMoE(DINOv3Classifier):
             list(self.experts.parameters()) +
             list(self.freq_enc.parameters()) +
             list(self.freq_pool.parameters()) +
-            list(self.alpha_gen.parameters()) +
+            list(self.cls_router_proj.parameters()) +
             list(self.router.parameters()) +
-            [self.tau] +
+            [self.tau, self.alpha] +
             self._lora_params
         )
         for p in sources:
@@ -140,7 +146,6 @@ class DINOv3FreqMoE(DINOv3Classifier):
         torch.save(state, path)
 
     def load_freq_encoder(self, freq_ckpt_path, device="cpu"):
-        """Load pretrained FreqClassifier weights into freq_enc."""
         ckpt = torch.load(freq_ckpt_path, map_location="cpu")
         state = ckpt.get("trainable_model", ckpt.get("model", ckpt))
         mapping = {}
@@ -155,17 +160,17 @@ class DINOv3FreqMoE(DINOv3Classifier):
             state = state["trainable_model"]
         elif isinstance(state, dict) and "model" in state:
             state = state["model"]
-        # Backward compat: map legacy single-head checkpoints (head.*) to all experts
-        # Expert Mutation: inject tiny noise to break symmetry for MoE routing
         head_keys = {k: v for k, v in state.items() if k.startswith("head.")}
         if head_keys and not any(k.startswith("experts.") for k in state):
             for i in range(self._num_experts):
                 for hk, hv in head_keys.items():
                     w = hv.clone()
                     if i > 0 and w.is_floating_point():
-                        w = w + torch.randn_like(w) * 1e-3
+                        scale = max(w.std(unbiased=False).item(), w.abs().mean().item(), 1e-6)
+                        w = w + torch.randn_like(w) * scale * 0.01
                     state[f"experts.{i}.{hk[5:]}"] = w
             for hk in head_keys:
                 state.pop(hk)
-        state.pop("alpha", None)
+        if "alpha" in state and state["alpha"].shape != self.alpha.shape:
+            state.pop("alpha")
         self.load_state_dict(state, strict=False)

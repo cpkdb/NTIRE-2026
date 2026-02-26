@@ -75,7 +75,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device,
     has_moe = hasattr(model, 'forward_with_aux')
 
     effective_cons_weight = consistency_weight * min(1.0, epoch / cons_ramp_epochs) if cons_ramp_epochs > 0 else consistency_weight
-    effective_lb = lb_weight * max(0.2, 1.0 - epoch / total_epochs) if total_epochs > 0 else lb_weight
+    effective_lb = lb_weight * max(0.0, 1.0 - (epoch + 1) / total_epochs) if total_epochs > 0 else lb_weight
 
     for images, labels in tqdm(loader, desc="Training"):
         images, labels = images.to(device), labels.to(device)
@@ -191,10 +191,13 @@ def main():
     parser.add_argument("--freq_ckpt", type=str, default=None, help="Pretrained FreqClassifier checkpoint")
     parser.add_argument("--freeze_lora_only", action="store_true", help="Freeze LoRA params (Stage A)")
     parser.add_argument("--freeze_experts", action="store_true", help="Freeze expert params (Stage A)")
-    parser.add_argument("--moe_lr_scale", type=float, default=1.0, help="LR scale for router/alpha_gen/freq_enc")
+    parser.add_argument("--freeze_proj", action="store_true", help="Freeze proj1/proj2/alpha params")
+    parser.add_argument("--moe_lr_scale", type=float, default=1.0, help="LR scale for router/cls_router_proj/freq_enc")
     parser.add_argument("--lora_lr_scale", type=float, default=1.0, help="LR scale for LoRA params (Stage B)")
     parser.add_argument("--warmup_epochs", type=int, default=2)
     parser.add_argument("--cons_ramp_epochs", type=int, default=3)
+    parser.add_argument("--use_gumbel", action="store_true", help="Enable Gumbel-Softmax routing")
+    parser.add_argument("--gumbel_start_epoch", type=int, default=2, help="Epoch to start Gumbel-Softmax")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -268,15 +271,20 @@ def main():
 
     if use_contrastive:
         criterion = nn.BCEWithLogitsLoss()
-        if args.model_type == "dinov3_moe" and (args.freeze_lora_only or args.freeze_experts or args.lora_lr_scale != 1.0 or args.moe_lr_scale != 1.0):
+        if args.model_type == "dinov3_moe" and (args.freeze_lora_only or args.freeze_experts or args.freeze_proj or args.lora_lr_scale != 1.0 or args.moe_lr_scale != 1.0):
             moe_params, lora_params, moe_new_params = [], [], []
             lora_ids = {id(p) for p in model._lora_params}
             expert_ids = {id(p) for p in model.experts.parameters()}
+            proj_ids = {id(p) for p in model.proj1.parameters()}
+            proj_ids.update(id(p) for p in model.proj2.parameters())
+            proj_ids.add(id(model.alpha))
             moe_new_ids = set()
-            for p in list(model.router.parameters()) + list(model.alpha_gen.parameters()) + list(model.freq_enc.parameters()) + [model.tau]:
+            for p in list(model.router.parameters()) + list(model.cls_router_proj.parameters()) + list(model.freq_enc.parameters()) + [model.tau]:
                 moe_new_ids.add(id(p))
             # Freeze pass (independent checks)
             for name, p in model.named_parameters():
+                if args.freeze_proj and id(p) in proj_ids:
+                    p.requires_grad = False
                 if not p.requires_grad:
                     continue
                 if args.freeze_lora_only and id(p) in lora_ids:
@@ -358,6 +366,16 @@ def main():
 
     for epoch in range(start_epoch, args.epochs):
         print(f"\nEpoch {epoch + 1}/{args.epochs}")
+        if args.model_type == "dinov3_moe" and hasattr(model, "_use_gumbel"):
+            stage_epoch = epoch - start_epoch
+            if args.use_gumbel and stage_epoch >= args.gumbel_start_epoch:
+                model._use_gumbel = True
+                gumbel_span = max(1, args.epochs - start_epoch - args.gumbel_start_epoch - 1)
+                gumbel_progress = min(1.0, (stage_epoch - args.gumbel_start_epoch) / gumbel_span)
+                model._gumbel_tau = max(0.1, 1.0 - 0.9 * gumbel_progress)
+                print(f"Gumbel routing: enabled (tau={model._gumbel_tau:.4f})")
+            else:
+                model._use_gumbel = False
         train_loss = train_one_epoch(
             model, train_loader, criterion, optimizer, device,
             use_contrastive, consistency_weight=args.consistency_weight,
